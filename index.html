@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Ospitalia AI — Weekly Analyzer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:#0f1117;font-family:'IBM Plex Sans','Segoe UI',sans-serif;color:#e2e8f0;min-height:100vh;}
+  ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:#1a1d27}::-webkit-scrollbar-thumb{background:#3a3f52;border-radius:2px}
+  .file-card{cursor:pointer;transition:border-color .15s,background .15s}.file-card:hover{border-color:#f59e0b!important;background:#1a1d27!important}
+  .tab-btn{transition:color .12s,border-color .12s}.tab-btn:hover{color:#f59e0b!important}
+  .action-row{transition:background .12s}.action-row:hover{background:#1e2030!important}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+  .fade-up{animation:fadeUp .4s ease forwards}
+  .score-bar{transition:width .8s cubic-bezier(.4,0,.2,1)}
+  input[type=file]{display:none}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useCallback } = React;
+
+// ── SYSTEM PROMPT ─────────────────────────────────────────────────────────────
+const SYSTEM_PROMPT = `Sei un revenue manager senior con 15 anni di esperienza specializzato in ottimizzazione Airbnb e configurazione PriceLabs. Lavori per Ospitalia AI, servizio di co-hosting e revenue management in Italia.
+
+HAI RICEVUTO 4 FONTI DATI:
+
+1. PREZZI_MERCATO (01_market_input.csv — PriceLabs Future Prices):
+   Colonne: Date, Final Price (prezzo impostato), Last Seen Price, Min Stay, Available (true/false), Status (Available/Booked/Booked Check-In), ADR (ADR prenotazioni esistenti), Booked Date
+
+2. CALENDARIO_MERCATO (02_calendar_input.csv — PriceLabs Calendar):
+   Colonne: Date, Market Occupancy (% occupancy mercato), Market 25/50/75/90th Percentile Price, Your Booked Occupancy (tua %), Final Price, 7-day market pickup, Holiday/Event, market_occupancy_change
+
+3. BOOKINGS_STORICO (03_bookings_input.xlsx):
+   Colonne: Data di check-in, Data di check-out, Data Prenotata, Prezzo medio di vendita (ADR), Ricavi totali, Durata del soggiorno (Giorni), Finestra di Prenotazione (Giorni), Stato, PMS
+
+4. AIRBNB_STATUS (04_status_airbnb_input.xlsx — 2 fogli):
+   Foglio1: info proprietà (tipologia, ospiti, pulizia) + storico mensile views/prenotazioni/tasso conversione
+   Foglio2: rolling 30gg — views, nuove prenotazioni, tasso conversione, variazioni settimana su settimana
+
+FRAMEWORK DI DIAGNOSI:
+- Prezzi vs mercato: Final Price > P75 su date disponibili = sovraprezzo; < P25 = sottoprezzo
+- Tasso conversione: sotto 1% = problema listing/prezzo; 1.5-3% = normale; sopra 3% = alza il prezzo
+- RevPAR = ADR × (Occupancy/100). Obiettivo: max RevPAR, non max occupancy
+- Finestra prenotazione media: < 14gg = last-minute (LM discount + min stay flessibile); > 30gg = advance bookers
+- Su eventi/festività: verifica che il tuo prezzo sia sopra P75 mercato
+- Gap occupancy: confronta Your Booked Occupancy vs Market Occupancy nelle prossime 4 settimane
+- Trend views: views crescono ma bookings no = problema prezzo o listing; entrambi calano = problema visibilità
+
+REGOLE PRICELABS:
+- Base Price: ADR storico mesi comparabili
+- Min Price: mai sotto 60% Base Price
+- Max Price: almeno 2.5x Base Price
+- Last Minute Discount: -10% a 3gg, -15% a 1gg se finestra media < 20gg
+- Far Future Premium: +5-10% oltre 90gg
+- Orphan Days: gap fill attivo
+- Min Stay: 2n standard, 1n last-minute (< 3gg)
+- Eventi con mktOcc > 80%: +20-40% sopra Base
+
+OUTPUT — Rispondi SOLO con JSON valido, zero markdown, zero testo extra:
+{"diagnosi":{"tipo":"pricing|listing|misto","punteggio_pricing":0,"punteggio_listing":0,"urgenza":"alta|media|bassa","titolo":"","evidenze":[{"fatto":"","implicazione":"","tipo":"pricing|listing"}],"raccomandazione_principale":""},"pricelabs":{"sommario":"","modifiche":[{"parametro":"","valore_attuale":"","valore_suggerito":"","impatto":"alto|medio|basso","motivazione":"","quando":"Immediato|Prossima settimana|Entro il mese"}],"note_strategiche":""},"airbnb":{"sommario":"","titolo":{"attuale":"","suggerito":"","motivazione":""},"foto":[{"priorita":1,"tipo":"","suggerimento":"","motivazione":""}],"descrizione":{"punti_forza":[],"elementi_mancanti":[],"apertura_suggerita":""},"quick_wins":[]},"report":{"periodo":"","proprieta":"","kpi":{"occupancy_attuale_pct":0,"occupancy_mercato_pct":0,"adr_euro":0,"revpar_euro":0,"ricavi_confermati_euro":0,"booking_rate_pct":0,"views_ultimi_30gg":0},"confronto_mercato":{"posizionamento":"sopra|in_linea|sotto","gap_occupancy_pp":0,"gap_prezzo_euro":0,"analisi":""},"prossime_prenotazioni":[{"checkin":"","checkout":"","notti":0,"ricavo":0,"finestra_gg":0}],"azioni_settimana":[{"priorita":1,"azione":"","categoria":"pricing|listing|operativa","scadenza":""}],"trend_segnali":""}}`;
+
+// ── PARSERS ───────────────────────────────────────────────────────────────────
+const parseCsv = (file) => new Promise((res,rej) =>
+  Papa.parse(file,{header:true,skipEmptyLines:true,complete:r=>res(r.data),error:rej})
+);
+const parseXlsx = (file, allSheets) => new Promise((res,rej) => {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const wb = XLSX.read(e.target.result,{type:"array",cellDates:true});
+      if (allSheets) {
+        const out={};
+        wb.SheetNames.forEach(n => { out[n]=XLSX.utils.sheet_to_json(wb.Sheets[n],{raw:false,dateNF:"yyyy-mm-dd",defval:null}); });
+        res(out);
+      } else {
+        res(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{raw:false,dateNF:"yyyy-mm-dd"}));
+      }
+    } catch(err){rej(err);}
+  };
+  reader.onerror=rej;
+  reader.readAsArrayBuffer(file);
+});
+
+// ── DATA PREP ─────────────────────────────────────────────────────────────────
+const prepMarket = (rows) => rows.slice(0,90).map(r=>({
+  date:r["Date"],price:r["Final Price"],minStay:r["Min Stay"],
+  available:r["Available"],status:r["Status"],adr:r["ADR"],bookedDate:r["Booked Date"]
+}));
+const prepCal = (rows) => rows.slice(0,90).map(r=>({
+  date:r["Date"],mktOcc:r["Market Occupancy"],
+  p25:r["Market 25th Percentile Price"],p50:r["Market 50th Percentile Price"],
+  p75:r["Market 75th Percentile Price"],p90:r["Market 90th Percentile Price"],
+  yourOcc:r["Your Booked Occupancy"],finalPrice:r["Final Price"],
+  pickup7d:r["7-day market pickup"],event:r["Holiday/Event"],mktChange:r["market_occupancy_change"]
+})).filter(r=>r.mktOcc);
+const prepBookings = (rows) => rows.map(r=>({
+  checkin:r["Data di check-in"],checkout:r["Data di check-out"],
+  booked:r["Data Prenotata"],adr:r["Prezzo medio di vendita"],
+  revenue:r["Ricavi totali"],nights:r["Durata del soggiorno (Giorni)"],
+  window:r["Finestra di Prenotazione (Giorni)"],
+  platform:r["PMS"]||r["Fonte di prenotazione"],status:r["Stato della prenotazione"]
+}));
+const prepAirbnb = (sheets) => {
+  const names = Object.keys(sheets);
+  const f1 = sheets[names[0]]||[];
+  const f2 = sheets[names[1]]||[];
+  return {
+    mensile: f1.filter(r=>r["MESE"]||r["Mese"]).map(r=>({
+      mese:r["MESE"]||r["Mese"],settimana:r["SETTIMANA"]||r["Settimana"],
+      views:r["Visualizzazioni"],bookings:r["Prenotazioni"],
+      convRate:r["Tasso di prenotazione"],dataLettura:r["DATA LETTURA"]||r["Data Lettura"]
+    })),
+    rolling30: f2.filter(r=>r["Visualizzazioni ultimi 30 giorni"]!=null).map(r=>({
+      data:r["DATA"]||r["Data"],settimana:r["SETTIMANA"]||r["Settimana"],
+      views30:r["Visualizzazioni ultimi 30 giorni"],
+      bookings30:r["Nuove prenotazioni ultimi 30 giorni"],
+      convRate:r["Tasso di prenotazione"],
+      deltaViews:r["Variazione visualizzazioni"],
+      deltaBookings:r["Variazione Prenotazioni"]
+    }))
+  };
+};
+
+// ── SHARED UI ─────────────────────────────────────────────────────────────────
+const Chip = ({text,color="#f59e0b",bg="#1c160a"}) => (
+  <span style={{fontSize:10,fontWeight:700,padding:"3px 8px",borderRadius:99,background:bg,color,
+    border:`1px solid ${color}30`,fontFamily:"'IBM Plex Mono',monospace",letterSpacing:"0.3px",
+    textTransform:"uppercase",display:"inline-block",whiteSpace:"nowrap"}}>{text}</span>
+);
+const ST = ({children}) => (
+  <div style={{fontSize:11,fontWeight:700,color:"#4b5563",letterSpacing:"1px",textTransform:"uppercase",
+    fontFamily:"'IBM Plex Mono',monospace",marginBottom:12,marginTop:20}}>{children}</div>
+);
+const Card = ({children,accent="#1e2230"}) => (
+  <div style={{background:"#0f1117",border:`1px solid ${accent}`,borderRadius:10,padding:"14px 16px",marginBottom:10}}>{children}</div>
+);
+
+// ── TAB DIAGNOSI ──────────────────────────────────────────────────────────────
+function DiagnosiTab({d}) {
+  if(!d) return null;
+  const tmap={pricing:{color:"#ef4444",bg:"#1a0a0a",label:"Problema Pricing"},listing:{color:"#3b82f6",bg:"#0a0f1a",label:"Problema Listing"},misto:{color:"#f59e0b",bg:"#1a1200",label:"Problema Misto"}};
+  const umap={alta:"#ef4444",media:"#f59e0b",bassa:"#22c55e"};
+  const t=tmap[d.tipo]||tmap.misto; const uc=umap[d.urgenza]||"#6b7280";
+  const ps=Number(d.punteggio_pricing)||0,ls=Number(d.punteggio_listing)||0;
+  return <div>
+    <div style={{background:t.bg,border:`1px solid ${t.color}30`,borderRadius:12,padding:"18px 20px",marginBottom:16}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10,gap:8,flexWrap:"wrap"}}>
+        <Chip text={t.label} color={t.color} bg={t.bg}/><Chip text={`Urgenza ${d.urgenza}`} color={uc} bg="#0f1117"/>
+      </div>
+      <div style={{fontSize:16,fontWeight:700,color:"#f1f5f9",lineHeight:1.4,marginBottom:8}}>{d.titolo}</div>
+      <div style={{fontSize:13,color:"#9ca3af",lineHeight:1.6}}>{d.raccomandazione_principale}</div>
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:4}}>
+      {[{label:"Score Pricing",val:ps,color:"#ef4444"},{label:"Score Listing",val:ls,color:"#3b82f6"}].map(({label,val,color})=>(
+        <div key={label} style={{background:"#0f1117",border:"1px solid #1e2230",borderRadius:10,padding:"14px 16px"}}>
+          <div style={{fontSize:11,color:"#6b7280",marginBottom:4,fontFamily:"'IBM Plex Mono',monospace"}}>{label}</div>
+          <div style={{fontSize:30,fontWeight:700,color,marginBottom:8}}>{val}</div>
+          <div style={{height:4,background:"#1e2230",borderRadius:99}}><div className="score-bar" style={{height:4,borderRadius:99,background:color,width:`${val}%`}}/></div>
+        </div>
+      ))}
+    </div>
+    <ST>Evidenze analitiche</ST>
+    {(d.evidenze||[]).map((ev,i)=>(
+      <Card key={i} accent={ev.tipo==="pricing"?"#ef444420":"#3b82f620"}>
+        <div style={{display:"flex",gap:10,alignItems:"flex-start",flexWrap:"wrap"}}>
+          <Chip text={ev.tipo} color={ev.tipo==="pricing"?"#ef4444":"#3b82f6"} bg="#0f1117"/>
+          <div style={{flex:1,minWidth:200}}>
+            <div style={{fontSize:13,color:"#e2e8f0",fontWeight:500}}>{ev.fatto}</div>
+            <div style={{fontSize:12,color:"#6b7280",marginTop:4}}>→ {ev.implicazione}</div>
+          </div>
+        </div>
+      </Card>
+    ))}
+  </div>;
+}
+
+// ── TAB PRICELABS ─────────────────────────────────────────────────────────────
+function PriceLabsTab({d}) {
+  if(!d) return null;
+  const ic={alto:"#ef4444",medio:"#f59e0b",basso:"#22c55e"};
+  const wc={"Immediato":"#ef4444","Prossima settimana":"#f59e0b","Entro il mese":"#6b7280"};
+  return <div>
+    <div style={{background:"#0f1117",border:"1px solid #1e2230",borderRadius:10,padding:"14px 16px",fontSize:13,color:"#9ca3af",lineHeight:1.6,marginBottom:4}}>{d.sommario}</div>
+    <ST>Modifiche da applicare ({(d.modifiche||[]).length})</ST>
+    {(d.modifiche||[]).map((m,i)=>(
+      <div key={i} className="action-row" style={{background:"#0f1117",border:"1px solid #1e2230",borderRadius:10,padding:"14px 16px",marginBottom:8}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8,gap:8}}>
+          <div style={{fontSize:14,fontWeight:600,color:"#f1f5f9"}}>{m.parametro}</div>
+          <Chip text={m.impatto} color={ic[m.impatto]||"#6b7280"} bg="#0f1117"/>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:8,fontFamily:"'IBM Plex Mono',monospace",fontSize:13,flexWrap:"wrap"}}>
+          <span style={{color:"#4b5563",textDecoration:"line-through"}}>{m.valore_attuale}</span>
+          <span style={{color:"#374151"}}>→</span>
+          <span style={{color:"#22c55e",fontWeight:700}}>{m.valore_suggerito}</span>
+        </div>
+        <div style={{fontSize:12,color:"#6b7280",lineHeight:1.6,marginBottom:6}}>{m.motivazione}</div>
+        <div style={{fontSize:11,color:wc[m.quando]||"#6b7280",fontWeight:m.quando==="Immediato"?700:400,fontFamily:"'IBM Plex Mono',monospace"}}>⏰ {m.quando}</div>
+      </div>
+    ))}
+    {d.note_strategiche&&<><ST>Note Strategiche</ST><div style={{background:"#0a0f1a",border:"1px solid #1e3a5f",borderRadius:10,padding:"14px 16px",fontSize:13,color:"#93c5fd",lineHeight:1.6}}>{d.note_strategiche}</div></>}
+  </div>;
+}
+
+// ── TAB AIRBNB ────────────────────────────────────────────────────────────────
+function AirbnbTab({d}) {
+  if(!d) return null;
+  return <div>
+    <div style={{background:"#0f1117",border:"1px solid #1e2230",borderRadius:10,padding:"14px 16px",fontSize:13,color:"#9ca3af",lineHeight:1.6,marginBottom:4}}>{d.sommario}</div>
+    {d.titolo&&<><ST>Ottimizzazione Titolo</ST><Card>
+      <div style={{fontSize:12,color:"#4b5563",marginBottom:4,fontFamily:"'IBM Plex Mono',monospace"}}>ATTUALE</div>
+      <div style={{fontSize:14,color:"#6b7280",textDecoration:"line-through",marginBottom:10}}>{d.titolo.attuale}</div>
+      <div style={{fontSize:12,color:"#4b5563",marginBottom:4,fontFamily:"'IBM Plex Mono',monospace"}}>SUGGERITO</div>
+      <div style={{fontSize:15,color:"#22c55e",fontWeight:700,marginBottom:8}}>{d.titolo.suggerito}</div>
+      <div style={{fontSize:12,color:"#6b7280"}}>{d.titolo.motivazione}</div>
+    </Card></>}
+    {d.foto&&d.foto.length>0&&<><ST>Priorità Foto ({d.foto.length})</ST>
+      {d.foto.map((f,i)=>(
+        <div key={i} style={{display:"flex",gap:12,background:"#0f1117",border:"1px solid #1e2230",borderRadius:10,padding:"12px 14px",marginBottom:8,alignItems:"flex-start"}}>
+          <div style={{width:28,height:28,background:"#1e2230",borderRadius:99,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700,color:"#f59e0b",flexShrink:0,fontFamily:"'IBM Plex Mono',monospace"}}>{f.priorita}</div>
+          <div><div style={{fontSize:12,fontWeight:600,color:"#f59e0b",fontFamily:"'IBM Plex Mono',monospace",textTransform:"uppercase",marginBottom:3}}>{f.tipo}</div>
+          <div style={{fontSize:13,color:"#e2e8f0",marginBottom:4}}>{f.suggerimento}</div>
+          <div style={{fontSize:12,color:"#6b7280",fontStyle:"italic"}}>{f.motivazione}</div></div>
+        </div>
+      ))}
+    </>}
+    {d.descrizione&&<><ST>Analisi Descrizione</ST>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+        <div style={{background:"#0a1a0e",border:"1px solid #14532d50",borderRadius:10,padding:"12px 14px"}}>
+          <div style={{fontSize:11,color:"#22c55e",fontWeight:700,marginBottom:8,fontFamily:"'IBM Plex Mono',monospace"}}>✓ PUNTI FORZA</div>
+          {(d.descrizione.punti_forza||[]).map((p,i)=><div key={i} style={{fontSize:12,color:"#9ca3af",marginBottom:5,lineHeight:1.5}}>• {p}</div>)}
+        </div>
+        <div style={{background:"#1a1200",border:"1px solid #78350f50",borderRadius:10,padding:"12px 14px"}}>
+          <div style={{fontSize:11,color:"#f59e0b",fontWeight:700,marginBottom:8,fontFamily:"'IBM Plex Mono',monospace"}}>⚠ MANCANTI</div>
+          {(d.descrizione.elementi_mancanti||[]).map((p,i)=><div key={i} style={{fontSize:12,color:"#9ca3af",marginBottom:5,lineHeight:1.5}}>• {p}</div>)}
+        </div>
+      </div>
+      {d.descrizione.apertura_suggerita&&<div style={{background:"#0a0f1a",border:"1px solid #1e3a5f",borderRadius:10,padding:"12px 14px"}}>
+        <div style={{fontSize:11,color:"#60a5fa",fontWeight:700,marginBottom:6,fontFamily:"'IBM Plex Mono',monospace"}}>APERTURA SUGGERITA</div>
+        <div style={{fontSize:13,color:"#bfdbfe",fontStyle:"italic",lineHeight:1.6}}>"{d.descrizione.apertura_suggerita}"</div>
+      </div>}
+    </>}
+    {d.quick_wins&&d.quick_wins.length>0&&<><ST>⚡ Quick Wins Immediati</ST>
+      {d.quick_wins.map((q,i)=>(
+        <div key={i} style={{display:"flex",gap:10,marginBottom:8,alignItems:"flex-start"}}>
+          <span style={{color:"#f59e0b",fontSize:14,lineHeight:1.5,flexShrink:0}}>→</span>
+          <span style={{fontSize:13,color:"#e2e8f0",lineHeight:1.5}}>{q}</span>
+        </div>
+      ))}
+    </>}
+  </div>;
+}
+
+// ── TAB REPORT ────────────────────────────────────────────────────────────────
+function ReportTab({d}) {
+  if(!d) return null;
+  const {kpi={},confronto_mercato={},prossime_prenotazioni=[],azioni_settimana=[]}=d;
+  const ps={sopra:{color:"#22c55e",label:"↑ Sopra mercato"},in_linea:{color:"#60a5fa",label:"≈ In linea"},sotto:{color:"#ef4444",label:"↓ Sotto mercato"}}[confronto_mercato.posizionamento]||{color:"#6b7280",label:"—"};
+  const cc={pricing:"#ef4444",listing:"#3b82f6",operativa:"#6b7280"};
+  const cb={pricing:"#1a0a0a",listing:"#0a0f1a",operativa:"#131313"};
+  const sorted=[...azioni_settimana].sort((a,b)=>Number(a.priorita)-Number(b.priorita));
+  return <div>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16,flexWrap:"wrap",gap:8}}>
+      <div>
+        <div style={{fontSize:16,fontWeight:700,color:"#f1f5f9"}}>{d.proprieta}</div>
+        <div style={{fontSize:12,color:"#4b5563",fontFamily:"'IBM Plex Mono',monospace",marginTop:2}}>{d.periodo}</div>
+      </div>
+      <span style={{fontSize:13,fontWeight:700,color:ps.color,fontFamily:"'IBM Plex Mono',monospace"}}>{ps.label}</span>
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:4}}>
+      {[
+        {label:"Occupancy",val:kpi.occupancy_attuale_pct!=null?`${kpi.occupancy_attuale_pct}%`:"—",sub:`Mkt ${kpi.occupancy_mercato_pct??"—"}%`},
+        {label:"ADR",val:kpi.adr_euro!=null?`€${kpi.adr_euro}`:"—",sub:"Prezzo medio notte"},
+        {label:"RevPAR",val:kpi.revpar_euro!=null?`€${kpi.revpar_euro}`:"—",sub:"€/notte disponibile"},
+        {label:"Ricavi Conf.",val:kpi.ricavi_confermati_euro!=null?`€${kpi.ricavi_confermati_euro}`:"—",sub:"Prenotazioni attive"},
+        {label:"Booking Rate",val:kpi.booking_rate_pct!=null?`${kpi.booking_rate_pct}%`:"—",sub:"Tasso conversione"},
+        {label:"Views 30gg",val:kpi.views_ultimi_30gg??"—",sub:"Visualizzazioni"},
+      ].map(({label,val,sub})=>(
+        <div key={label} style={{background:"#0f1117",border:"1px solid #1e2230",borderRadius:10,padding:"10px",textAlign:"center"}}>
+          <div style={{fontSize:10,color:"#4b5563",fontFamily:"'IBM Plex Mono',monospace"}}>{label}</div>
+          <div style={{fontSize:20,fontWeight:700,color:"#f1f5f9",margin:"4px 0"}}>{val}</div>
+          <div style={{fontSize:10,color:"#374151"}}>{sub}</div>
+        </div>
+      ))}
+    </div>
+    <ST>Confronto Mercato</ST>
+    <Card>
+      <div style={{display:"flex",gap:24,marginBottom:8,flexWrap:"wrap"}}>
+        <div style={{fontSize:13}}>Gap Occ: <strong style={{color:(confronto_mercato.gap_occupancy_pp||0)<0?"#ef4444":"#22c55e",fontFamily:"'IBM Plex Mono',monospace"}}>{(confronto_mercato.gap_occupancy_pp||0)>0?"+":""}{confronto_mercato.gap_occupancy_pp??"—"}pp</strong></div>
+        <div style={{fontSize:13}}>Gap Prezzo: <strong style={{color:(confronto_mercato.gap_prezzo_euro||0)<0?"#ef4444":"#22c55e",fontFamily:"'IBM Plex Mono',monospace"}}>{(confronto_mercato.gap_prezzo_euro||0)>0?"+":""}€{confronto_mercato.gap_prezzo_euro??"—"}</strong></div>
+      </div>
+      <div style={{fontSize:12,color:"#9ca3af",lineHeight:1.6}}>{confronto_mercato.analisi}</div>
+    </Card>
+    {prossime_prenotazioni.length>0&&<><ST>Prossime Prenotazioni ({prossime_prenotazioni.length})</ST>
+      {prossime_prenotazioni.map((b,i)=>(
+        <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:"#0f1117",border:"1px solid #1e2230",borderRadius:8,padding:"10px 14px",marginBottom:6,fontSize:12,fontFamily:"'IBM Plex Mono',monospace",flexWrap:"wrap",gap:8}}>
+          <span style={{color:"#e2e8f0"}}>{b.checkin} → {b.checkout}</span>
+          <span style={{color:"#6b7280"}}>{b.notti}n</span>
+          <span style={{color:"#22c55e",fontWeight:700}}>€{b.ricavo}</span>
+          <span style={{color:"#4b5563"}}>{b.finestra_gg}gg anticipo</span>
+        </div>
+      ))}
+    </>}
+    {sorted.length>0&&<><ST>Piano Azioni Settimana</ST>
+      {sorted.map((a,i)=>(
+        <div key={i} className="action-row" style={{display:"flex",gap:12,background:"#0f1117",border:"1px solid #1e2230",borderRadius:10,padding:"12px 14px",marginBottom:8}}>
+          <div style={{width:24,height:24,background:"#1e2230",borderRadius:99,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"#f59e0b",flexShrink:0,fontFamily:"'IBM Plex Mono',monospace"}}>{a.priorita}</div>
+          <div style={{flex:1}}>
+            <div style={{fontSize:13,color:"#e2e8f0",marginBottom:6,lineHeight:1.5}}>{a.azione}</div>
+            <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+              <span style={{fontSize:10,fontWeight:700,padding:"2px 7px",borderRadius:99,background:cb[a.categoria]||"#131313",color:cc[a.categoria]||"#6b7280",fontFamily:"'IBM Plex Mono',monospace",textTransform:"uppercase",border:`1px solid ${cc[a.categoria]||"#374151"}30`}}>{a.categoria}</span>
+              <span style={{fontSize:11,color:"#4b5563",fontFamily:"'IBM Plex Mono',monospace"}}>{a.scadenza}</span>
+            </div>
+          </div>
+        </div>
+      ))}
+    </>}
+    {d.trend_segnali&&<><ST>📡 Segnali & Trend</ST><div style={{background:"#0d0f1a",border:"1px solid #2e1065",borderRadius:10,padding:"14px 16px",fontSize:13,color:"#c4b5fd",lineHeight:1.6}}>{d.trend_segnali}</div></>}
+  </div>;
+}
+
+// ── FILE CONFIG ───────────────────────────────────────────────────────────────
+const FILE_CONFIG = [
+  {key:"market",   label:"Prezzi & Mercato",       hint:"01_market_input.csv",         accept:".csv",  icon:"📈"},
+  {key:"calendar", label:"Calendario Mercato",      hint:"02_calendar_input.csv",       accept:".csv",  icon:"📅"},
+  {key:"bookings", label:"Bookings Report",         hint:"03_bookings_input.xlsx",      accept:".xlsx", icon:"📋"},
+  {key:"airbnb",   label:"Airbnb Status (2 fogli)", hint:"04_status_airbnb_input.xlsx", accept:".xlsx", icon:"🏡"},
+];
+
+// ── APP ───────────────────────────────────────────────────────────────────────
+function App() {
+  const [files,setFiles]=useState({market:null,calendar:null,bookings:null,airbnb:null});
+  const [status,setStatus]=useState("idle");
+  const [results,setResults]=useState(null);
+  const [activeTab,setActiveTab]=useState(0);
+  const [progress,setProgress]=useState("");
+  const [errorMsg,setErrorMsg]=useState("");
+
+  const allLoaded=FILE_CONFIG.every(({key})=>files[key]);
+  const handleFile=useCallback((key)=>(e)=>{const f=e.target.files?.[0];if(f)setFiles(p=>({...p,[key]:f}));},[]);
+
+  const analyze=async()=>{
+    setStatus("loading");setErrorMsg("");
+    try {
+      setProgress("Parsing CSV...");
+      const [mktRaw,calRaw]=await Promise.all([parseCsv(files.market),parseCsv(files.calendar)]);
+      setProgress("Parsing XLSX bookings...");
+      const bookRaw=await parseXlsx(files.bookings,false);
+      setProgress("Parsing XLSX Airbnb status...");
+      const airbnbSheets=await parseXlsx(files.airbnb,true);
+      setProgress("Analisi AI in corso...");
+
+      const airbnbData=prepAirbnb(airbnbSheets);
+      const txt=[
+        `=== 01_PREZZI_MERCATO (90gg) ===\n${JSON.stringify(prepMarket(mktRaw))}`,
+        `\n\n=== 02_CALENDARIO_MERCATO (90gg) ===\n${JSON.stringify(prepCal(calRaw))}`,
+        `\n\n=== 03_BOOKINGS_STORICO ===\n${JSON.stringify(prepBookings(bookRaw))}`,
+        `\n\n=== 04_AIRBNB_STATUS ===\nStorico mensile:\n${JSON.stringify(airbnbData.mensile)}\nRolling 30gg:\n${JSON.stringify(airbnbData.rolling30)}`,
+      ].join("").slice(0,60000);
+
+      const resp=await fetch("https://api.anthropic.com/v1/messages",{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          model:"claude-sonnet-4-20250514",max_tokens:4096,system:SYSTEM_PROMPT,
+          messages:[{role:"user",content:[{type:"text",text:txt+"\n\nGenera l'analisi completa. Rispondi SOLO con l'oggetto JSON."}]}]
+        })
+      });
+      if(!resp.ok){const e=await resp.text();throw new Error(`API ${resp.status}: ${e.slice(0,300)}`);}
+      const apiData=await resp.json();
+      const raw=apiData.content.filter(b=>b.type==="text").map(b=>b.text).join("");
+      const clean=raw.replace(/^```json\s*/m,"").replace(/```\s*$/m,"").trim();
+      setResults(JSON.parse(clean));
+      setStatus("done");setActiveTab(0);
+    } catch(err){setStatus("error");setErrorMsg(err.message);console.error(err);}
+  };
+
+  const TABS=["🔍 Diagnosi","⚙️ PriceLabs","🏠 Airbnb","📊 Report"];
+
+  return (
+    <div style={{padding:"20px 16px",maxWidth:860,margin:"0 auto"}}>
+      <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:24}}>
+        <div style={{width:40,height:40,background:"linear-gradient(135deg,#f59e0b,#ef4444)",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:18,flexShrink:0}}>O</div>
+        <div>
+          <div style={{fontWeight:700,fontSize:17,letterSpacing:"-0.3px"}}>Ospitalia AI <span style={{color:"#6b7280",fontWeight:400,fontSize:13}}>Weekly Analyzer</span></div>
+          <div style={{fontSize:11,color:"#4b5563",fontFamily:"'IBM Plex Mono',monospace"}}>4 file → diagnosi + pricelabs + airbnb + report</div>
+        </div>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
+        {FILE_CONFIG.map(({key,label,hint,accept,icon})=>(
+          <label key={key} className="file-card" style={{display:"block",border:`1.5px dashed ${files[key]?"#22c55e":"#2a2f3e"}`,borderRadius:12,padding:"14px 16px",background:files[key]?"#0d1f14":"#13161f"}}>
+            <input type="file" accept={accept} onChange={handleFile(key)}/>
+            <div style={{display:"flex",gap:10,alignItems:"flex-start"}}>
+              <span style={{fontSize:20,lineHeight:1,marginTop:2,flexShrink:0}}>{icon}</span>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontWeight:600,fontSize:12,color:"#cbd5e1"}}>{label}</div>
+                <div style={{fontSize:10,color:"#4b5563",fontFamily:"'IBM Plex Mono',monospace",marginTop:2,wordBreak:"break-all"}}>{hint}</div>
+                {files[key]
+                  ?<div style={{fontSize:11,color:"#22c55e",marginTop:6,fontWeight:500,wordBreak:"break-all"}}>✓ {files[key].name}</div>
+                  :<div style={{fontSize:11,color:"#f59e0b",marginTop:5}}>{accept}</div>}
+              </div>
+            </div>
+          </label>
+        ))}
+      </div>
+
+      <div style={{display:"flex",justifyContent:"center",marginBottom:20}}>
+        <button onClick={analyze} disabled={!allLoaded||status==="loading"} style={{
+          padding:"12px 32px",borderRadius:10,fontWeight:700,fontSize:14,border:"none",
+          cursor:allLoaded&&status!=="loading"?"pointer":"not-allowed",
+          background:allLoaded&&status!=="loading"?"linear-gradient(135deg,#f59e0b,#ef4444)":"#1e2030",
+          color:allLoaded&&status!=="loading"?"#0f1117":"#4b5563",
+          display:"flex",alignItems:"center",gap:8,fontFamily:"'IBM Plex Sans',sans-serif",
+          opacity:!allLoaded||status==="loading"?0.7:1
+        }}>
+          {status==="loading"
+            ?<><div style={{width:16,height:16,border:"2px solid #0f1117",borderTopColor:"transparent",borderRadius:"50%",animation:"spin .7s linear infinite"}}/>{progress}</>
+            :allLoaded?"▶  Avvia Analisi Settimanale":`Carica file (${Object.values(files).filter(Boolean).length}/4)`}
+        </button>
+      </div>
+
+      {status==="error"&&(
+        <div style={{background:"#1f0a0a",border:"1px solid #7f1d1d",borderRadius:10,padding:"12px 16px",color:"#fca5a5",fontSize:13,marginBottom:16}}>⚠ {errorMsg}</div>
+      )}
+
+      {status==="done"&&results&&(
+        <div className="fade-up" style={{background:"#13161f",borderRadius:16,border:"1px solid #1e2230",overflow:"hidden"}}>
+          <div style={{display:"flex",borderBottom:"1px solid #1e2230",overflowX:"auto"}}>
+            {TABS.map((t,i)=>(
+              <button key={i} className="tab-btn" onClick={()=>setActiveTab(i)} style={{
+                flex:1,minWidth:80,padding:"13px 8px",background:"none",border:"none",cursor:"pointer",
+                fontSize:12,fontWeight:activeTab===i?700:400,
+                color:activeTab===i?"#f59e0b":"#6b7280",
+                borderBottom:activeTab===i?"2px solid #f59e0b":"2px solid transparent",
+                fontFamily:"'IBM Plex Sans',sans-serif",whiteSpace:"nowrap"
+              }}>{t}</button>
+            ))}
+          </div>
+          <div style={{padding:"20px 16px",maxHeight:"70vh",overflowY:"auto"}}>
+            {activeTab===0&&<DiagnosiTab d={results.diagnosi}/>}
+            {activeTab===1&&<PriceLabsTab d={results.pricelabs}/>}
+            {activeTab===2&&<AirbnbTab d={results.airbnb}/>}
+            {activeTab===3&&<ReportTab d={results.report}/>}
+          </div>
+        </div>
+      )}
+
+      <div style={{textAlign:"center",marginTop:16,fontSize:11,color:"#374151",fontFamily:"'IBM Plex Mono',monospace"}}>
+        ⚠ L'analisi AI richiede connessione internet
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>

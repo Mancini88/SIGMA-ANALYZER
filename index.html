@@ -368,11 +368,11 @@ function App() {
       ].join("").slice(0,60000);
 
       const resp=await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST",headers:{"Content-Type":"application/json"},
+        method:"POST",headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-calls":"true"},
         body:JSON.stringify({
           model:"claude-sonnet-4-20250514",max_tokens:4096,system:SYSTEM_PROMPT,
           messages:[{role:"user",content:[{type:"text",text:txt+"\n\nGenera l'analisi completa. Rispondi SOLO con l'oggetto JSON."}]}]
-        })
+        }),
       });
       if(!resp.ok){const e=await resp.text();throw new Error(`API ${resp.status}: ${e.slice(0,300)}`);}
       const apiData=await resp.json();

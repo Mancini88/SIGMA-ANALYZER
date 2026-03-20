@@ -349,6 +349,7 @@ function App() {
   const handleFile=useCallback((key)=>(e)=>{const f=e.target.files?.[0];if(f)setFiles(p=>({...p,[key]:f}));},[]);
 
   const analyze=async()=>{
+    if(!apiKey.trim()){setStatus("error");setErrorMsg("Inserisci la tua Anthropic API key prima di procedere.");return;}
     setStatus("loading");setErrorMsg("");
     try {
       setProgress("Parsing CSV...");
@@ -368,7 +369,7 @@ function App() {
       ].join("").slice(0,60000);
 
       const resp=await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST",headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-calls":"true"},
+        method:"POST",headers:{"Content-Type":"application/json","x-api-key":apiKey.trim(),"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-calls":"true"},
         body:JSON.stringify({
           model:"claude-sonnet-4-20250514",max_tokens:4096,system:SYSTEM_PROMPT,
           messages:[{role:"user",content:[{type:"text",text:txt+"\n\nGenera l'analisi completa. Rispondi SOLO con l'oggetto JSON."}]}]
@@ -393,6 +394,17 @@ function App() {
           <div style={{fontWeight:700,fontSize:17,letterSpacing:"-0.3px"}}>Ospitalia AI <span style={{color:"#6b7280",fontWeight:400,fontSize:13}}>Weekly Analyzer</span></div>
           <div style={{fontSize:11,color:"#4b5563",fontFamily:"'IBM Plex Mono',monospace"}}>4 file → diagnosi + pricelabs + airbnb + report</div>
         </div>
+      </div>
+
+      {/* API KEY */}
+      <div style={{background:"#13161f",border:`1.5px solid ${apiKey?"#22c55e":"#f59e0b"}`,borderRadius:12,padding:"14px 16px",marginBottom:14}}>
+        <div style={{fontSize:11,fontWeight:700,color:"#f59e0b",fontFamily:"'IBM Plex Mono',monospace",marginBottom:8,textTransform:"uppercase",letterSpacing:"1px"}}>🔑 Anthropic API Key</div>
+        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+          <input type={showKey?"text":"password"} value={apiKey} onChange={e=>saveKey(e.target.value)} placeholder="sk-ant-api03-..."
+            style={{flex:1,background:"#0f1117",border:"1px solid #2a2f3e",borderRadius:8,padding:"9px 12px",color:"#e2e8f0",fontSize:13,fontFamily:"'IBM Plex Mono',monospace",outline:"none",width:"100%"}}/>
+          <button onClick={()=>setShowKey(v=>!v)} style={{background:"#1e2230",border:"1px solid #2a2f3e",borderRadius:8,padding:"9px 12px",color:"#6b7280",cursor:"pointer",fontSize:12,fontFamily:"'IBM Plex Mono',monospace",whiteSpace:"nowrap",flexShrink:0}}>{showKey?"Nascondi":"Mostra"}</button>
+        </div>
+        <div style={{fontSize:10,color:"#4b5563",marginTop:6,fontFamily:"'IBM Plex Mono',monospace"}}>Trovala su console.anthropic.com → API Keys. Salvata nel browser, non trasmessa altrove.</div>
       </div>
 
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
